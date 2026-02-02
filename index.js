@@ -27,11 +27,14 @@ const OWNER_ID = "6905624065";
 const TREASURY_SOL_ADDRESS = "EyTtALk3AJubxGgkEvkkU4cJQcQuke8ovGV3AucuGs3J";
 
 // ===================== SYSTEM CONFIG =====================
-const BOT_TOKEN = process.env.BOT_TOKEN;
 require("dotenv").config();
 
-// Works locally (.env) AND on Railway (environment variable)
 const BOT_TOKEN = process.env.BOT_TOKEN;
+
+if (!BOT_TOKEN) {
+  throw new Error("Missing BOT_TOKEN environment variable.");
+}
+
 
 if (!BOT_TOKEN) {
   throw new Error("Missing BOT_TOKEN environment variable. Set it in Railway → Service → Variables.");
@@ -827,5 +830,6 @@ bot.telegram.getMe()
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
+
 
 
