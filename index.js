@@ -28,7 +28,15 @@ const TREASURY_SOL_ADDRESS = "EyTtALk3AJubxGgkEvkkU4cJQcQuke8ovGV3AucuGs3J";
 
 // ===================== SYSTEM CONFIG =====================
 const BOT_TOKEN = process.env.BOT_TOKEN;
-if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN in .env");
+require("dotenv").config();
+
+// Works locally (.env) AND on Railway (environment variable)
+const BOT_TOKEN = process.env.BOT_TOKEN;
+
+if (!BOT_TOKEN) {
+  throw new Error("Missing BOT_TOKEN environment variable. Set it in Railway → Service → Variables.");
+}
+
 
 const SOLANA_RPC = process.env.SOLANA_RPC || "https://api.mainnet-beta.solana.com";
 const solana = new Connection(SOLANA_RPC, "confirmed");
@@ -819,4 +827,5 @@ bot.telegram.getMe()
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
+
 
