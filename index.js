@@ -27,19 +27,8 @@ const OWNER_ID = "6905624065";
 const TREASURY_SOL_ADDRESS = "EyTtALk3AJubxGgkEvkkU4cJQcQuke8ovGV3AucuGs3J";
 
 // ===================== SYSTEM CONFIG =====================
-require("dotenv").config();
-
 const BOT_TOKEN = process.env.BOT_TOKEN;
-
-if (!BOT_TOKEN) {
-  throw new Error("Missing BOT_TOKEN environment variable.");
-}
-
-
-if (!BOT_TOKEN) {
-  throw new Error("Missing BOT_TOKEN environment variable. Set it in Railway → Service → Variables.");
-}
-
+if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN environment variable");
 
 const SOLANA_RPC = process.env.SOLANA_RPC || "https://api.mainnet-beta.solana.com";
 const solana = new Connection(SOLANA_RPC, "confirmed");
@@ -235,19 +224,25 @@ function memoFor(tgId, product) {
 
 function calcAmount(product, months, setupAlreadyPaid) {
   const p = PRODUCTS[product];
-  let amount = (setupAlreadyPaid ? 0 : p.setup) + (p.monthly * months);
 
+  // Setup includes the first 30 days. Monthly applies only after day 30.
+  const billableMonths = setupAlreadyPaid ? months : Math.max(0, months - 1);
+
+  let amount = (setupAlreadyPaid ? 0 : p.setup) + (p.monthly * billableMonths);
+
+  // Special offer: paid_access 5 months for 1 SOL (renewal only)
   if (
     PAID_ACCESS_SPECIAL.enabled &&
     product === "paid_access" &&
     months === PAID_ACCESS_SPECIAL.months &&
-    (setupAlreadyPaid || !PAID_ACCESS_SPECIAL.renewal_only)
+    setupAlreadyPaid
   ) {
-    amount = setupAlreadyPaid ? PAID_ACCESS_SPECIAL.pay_sol : (p.setup + PAID_ACCESS_SPECIAL.pay_sol);
+    amount = PAID_ACCESS_SPECIAL.pay_sol;
   }
 
   return Number(amount.toFixed(6));
 }
+
 
 function invoiceExpired(inv) {
   const ageSec = nowTs() - inv.created_at;
@@ -320,7 +315,7 @@ async function verifySolanaTx(txSig, expectedAmountSol, expectedMemo) {
     const logs = tx.meta.logMessages.join("\n");
     if (logs.includes(expectedMemo)) memoOk = true;
   }
-  if (!memoOk) return { ok: false, reason: "Memo/Reference does not match the invoice." };
+  // Memo is optional (Phantom usually doesn't support it easily). We'll still accept the tx without it.
 
   // Amount to treasury check
   const expectedLamports = Math.floor(expectedAmountSol * LAMPORTS_PER_SOL);
@@ -417,9 +412,9 @@ function textSupport() {
     `If something goes wrong:\n` +
     `1) Check "My Status"\n` +
     `2) Create a new invoice (Buy / Renew)\n` +
-    `3) Pay with the exact Memo/Reference\n` +
+    `3) Pay the exact amount to the address shown (memo optional)\n` +
     `4) Press "I paid" and paste your TX signature\n\n` +
-    `Tip: Make sure your payment includes the memo — otherwise it cannot be confirmed automatically.`
+    `Tip: Memo is optional. Paying the exact amount to the correct address is enough.`
   );
 }
 
@@ -564,8 +559,11 @@ bot.on("callback_query", async (ctx, next) => {
 
   await ctx.answerCbQuery();
 
-  const [, productKey, monthsStr] = data.split("_"); // DUR product months
-  const months = Number(monthsStr);
+  // DUR_<productKey>_<months>  (productKey can contain underscores!)
+const parts = data.split("_");
+const months = Number(parts.pop());
+parts.shift(); // remove "DUR"
+const productKey = parts.join("_");
 
   if (!productValid(productKey)) return;
   if (!Number.isFinite(months) || months <= 0 || months > MAX_MONTHS_PER_PURCHASE) {
@@ -590,7 +588,7 @@ bot.on("callback_query", async (ctx, next) => {
     `Duration: ${months} month(s) (${months * DAYS_PER_MONTH} days)\n` +
     `Amount: ${amount} SOL\n\n` +
     `Send SOL to:\n${TREASURY_SOL_ADDRESS}\n\n` +
-    `⚠️ Memo/Reference (must be exact):\n${memo}\n\n` +
+    `Memo/Reference (optional):\n${memo}\n\n` +
     `After paying, tap ✅ "I paid" and paste your TX signature.\n\n` +
     `This invoice expires in ${INVOICE_EXPIRE_MINUTES} minutes.`;
 
@@ -651,12 +649,27 @@ bot.on("callback_query", async (ctx, next) => {
   S.setState.run(String(ctx.from.id), "awaiting_tx", invoiceId, nowTs());
 
   await ctx.reply(
-    `✅ Great. Now paste your Solana TX signature here.\n\n` +
-    `Tip: It looks like a long string (base58).\n` +
+    `✅ Great. Now paste your Solana Transaction Signature (TXID) here.\n\n` +
+    `Phantom: open the transfer → copy "Signature".\n` +
+    `Tip: It looks like a long base58 string.\n` +
     `If you prefer, you can also paste it with the command:\n` +
     `/confirm ${invoiceId} <tx>`
   );
 });
+
+function normalizeTxSig(input) {
+  const raw = (input || "").trim();
+
+  // If user pastes a Solana explorer / Solscan URL, extract the signature
+  // Examples:
+  // https://explorer.solana.com/tx/<SIG>
+  // https://solscan.io/tx/<SIG>
+  const urlMatch = raw.match(/(?:explorer\.solana\.com\/tx\/|solscan\.io\/tx\/)([1-9A-HJ-NP-Za-km-z]{40,})/i);
+  if (urlMatch) return urlMatch[1];
+
+  // Otherwise return the raw string
+  return raw;
+}
 
 // Optional /confirm (still supported)
 bot.command("confirm", async (ctx) => {
@@ -669,7 +682,7 @@ bot.command("confirm", async (ctx) => {
   }
 
   const invoiceId = Number(parts[1]);
-  const txSig = parts[2];
+  const txSig = normalizeTxSig(parts.slice(2).join(" "));
   await handleConfirm(ctx, invoiceId, txSig);
 });
 
@@ -681,7 +694,7 @@ bot.on("text", async (ctx) => {
   const st = S.getState.get(String(ctx.from.id));
   if (!st || st.state !== "awaiting_tx" || !st.invoice_id) return;
 
-  const txSig = (ctx.message.text || "").trim();
+  const txSig = normalizeTxSig((ctx.message.text || ""));
   // Very light validation: length & base58-like chars
   if (txSig.length < 40 || txSig.length > 120 || !/^[1-9A-HJ-NP-Za-km-z]+$/.test(txSig)) {
     return ctx.reply("That does not look like a valid Solana TX signature. Please paste the TX signature again.");
@@ -830,6 +843,4 @@ bot.telegram.getMe()
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
-
-
 
